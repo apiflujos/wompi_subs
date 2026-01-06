@@ -115,6 +115,7 @@
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
       const [success, setSuccess] = useState(null);
+      const [priceForm, setPriceForm] = useState({ amount: '' });
       
       const [newSub, setNewSub] = useState({
         customer_name: '',
@@ -123,7 +124,8 @@
         customer_document_type: 'CC',
         customer_document: '',
         plan_id: 'basic_monthly',
-        payment_method: 'manual'
+        payment_method: 'manual',
+        custom_amount: ''
       });
 
       const plans = {
@@ -179,27 +181,8 @@
           const data = await response.json();
           setSubscriptions(data.subscriptions || data || []);
         } catch (err) {
-          setError('No se pudieron cargar las suscripciones. Verifica la conexión con n8n.');
+          setError('No se pudieron cargar las suscripciones. Verifica la conexión con n8n (CORS/URL).');
           console.error('Error:', err);
-          
-          // Datos de ejemplo para testing
-          setSubscriptions([
-            { 
-              subscription_id: 'sub_demo_001',
-              customer_name: 'Juan Pérez', 
-              customer_email: 'juan@email.com',
-              customer_phone: '+573001234567',
-              plan_id: 'premium_monthly',
-              plan_name: 'Premium Mensual', 
-              amount: 50000,
-              status: 'active',
-              billing_cycle: 'monthly',
-              payment_method: 'auto',
-              created_at: '2024-12-01T00:00:00Z',
-              next_billing_date: '2025-02-01T00:00:00Z',
-              failed_payments_count: 0
-            }
-          ]);
         } finally {
           setLoading(false);
         }
@@ -216,14 +199,24 @@
           return;
         }
 
+        if (newSub.custom_amount && (isNaN(Number(newSub.custom_amount)) || Number(newSub.custom_amount) <= 0)) {
+          setError('El monto personalizado debe ser un número mayor a 0');
+          return;
+        }
+
         setLoading(true);
         setError(null);
         
         try {
+          const payload = { ...newSub };
+          if (newSub.custom_amount) {
+            payload.custom_amount = Number(newSub.custom_amount);
+          }
+
           const response = await fetch(API_ENDPOINTS.CREATE, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newSub)
+            body: JSON.stringify(payload)
           });
           
           if (!response.ok) {
@@ -236,6 +229,39 @@
           closeModal();
         } catch (err) {
           setError(err.message || 'Error al crear la suscripción.');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleUpdatePrice = async () => {
+        if (!priceForm.amount || isNaN(Number(priceForm.amount)) || Number(priceForm.amount) <= 0) {
+          setError('Ingresa un monto válido para actualizar la suscripción');
+          return;
+        }
+
+        setLoading(true);
+        setError(null);
+
+        try {
+          const response = await fetch(API_ENDPOINTS.UPDATE_STATUS, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subscription_id: selectedSub.subscription_id,
+              action: 'update_price',
+              new_amount: Number(priceForm.amount),
+              customer_email: selectedSub.customer_email
+            })
+          });
+
+          if (!response.ok) throw new Error('Error al actualizar precio');
+
+          setSuccess('Precio actualizado exitosamente');
+          await fetchSubscriptions();
+          closeModal();
+        } catch (err) {
+          setError(err.message || 'Error al actualizar el precio.');
         } finally {
           setLoading(false);
         }
@@ -273,7 +299,9 @@
         active: subscriptions.filter(s => s.status === 'active').length,
         suspended: subscriptions.filter(s => s.status === 'suspended').length,
         pending: subscriptions.filter(s => s.status === 'pending_first_payment').length,
-        mrr: subscriptions.filter(s => s.status === 'active').reduce((sum, s) => sum + (s.amount || 0), 0),
+        mrr: subscriptions
+          .filter(s => s.status === 'active')
+          .reduce((sum, s) => sum + (s.custom_amount || s.amount || 0), 0),
         total: subscriptions.length
       };
 
@@ -283,6 +311,10 @@
         setShowModal(true);
         setError(null);
         setSuccess(null);
+        
+        if (type === 'price') {
+          setPriceForm({ amount: sub?.amount || '' });
+        }
       };
 
       const closeModal = () => {
@@ -295,8 +327,10 @@
           customer_document_type: 'CC',
           customer_document: '',
           plan_id: 'basic_monthly',
-          payment_method: 'manual'
+          payment_method: 'manual',
+          custom_amount: ''
         });
+        setPriceForm({ amount: '' });
         setError(null);
         setSuccess(null);
       };
@@ -486,10 +520,10 @@
                           </td>
                           <td className="px-6 py-4">
                             <span className="inline-flex px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
-                              {sub.plan_name || plans[sub.plan_id]?.name}
+                              {sub.plan_name || plans[sub.plan_id]?.name || 'Plan personalizado'}
                             </span>
                           </td>
-                          <td className="px-6 py-4 font-medium">{formatCurrency(sub.amount)}</td>
+                          <td className="px-6 py-4 font-medium">{formatCurrency(sub.custom_amount || sub.amount)}</td>
                           <td className="px-6 py-4">{getStatusBadge(sub.status)}</td>
                           <td className="px-6 py-4">
                             {sub.next_billing_date ? (
@@ -513,6 +547,15 @@
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex items-center justify-center gap-2">
+                              {sub.status !== 'cancelled' && (
+                                <button
+                                  onClick={() => openModal('price', sub)}
+                                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                                  title="Editar precio"
+                                >
+                                  <Icon.DollarSign size={18} />
+                                </button>
+                              )}
                               {sub.status === 'active' && (
                                 <>
                                   <button 
@@ -616,6 +659,18 @@
                           </select>
                         </div>
                         <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-2">Precio personalizado (opcional)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                            value={newSub.custom_amount}
+                            onChange={(e) => setNewSub({...newSub, custom_amount: e.target.value})}
+                            placeholder="Ej: 45000"
+                          />
+                          <p className="text-xs text-slate-500 mt-1">Si lo dejas vacío se usa el valor del plan seleccionado.</p>
+                        </div>
+                        <div>
                           <label className="block text-sm font-medium text-slate-700 mb-2">Método de Pago *</label>
                           <select
                             className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
@@ -641,6 +696,44 @@
                           disabled={loading || !newSub.customer_name || !newSub.customer_email}
                         >
                           {loading ? 'Creando...' : 'Crear Suscripción'}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {modalType === 'price' && selectedSub && (
+                    <>
+                      <h2 className="text-2xl font-bold text-slate-900 mb-4">Actualizar precio</h2>
+                      <p className="text-slate-600 mb-4">
+                        Suscripción de <strong>{selectedSub.customer_name}</strong>. Valor actual:{' '}
+                        <span className="font-semibold">{formatCurrency(selectedSub.custom_amount || selectedSub.amount)}</span>
+                      </p>
+                      <div className="space-y-3">
+                        <label className="block text-sm font-medium text-slate-700">Nuevo valor (COP)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                          value={priceForm.amount}
+                          onChange={(e) => setPriceForm({ amount: e.target.value })}
+                          placeholder="Ej: 60000"
+                        />
+                        <p className="text-xs text-slate-500">Se aplicará a próximos cobros de esta suscripción.</p>
+                      </div>
+                      <div className="flex gap-3 mt-6">
+                        <button
+                          onClick={closeModal}
+                          className="flex-1 px-4 py-2 border rounded-lg hover:bg-slate-50"
+                          disabled={loading}
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={handleUpdatePrice}
+                          className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                          disabled={loading}
+                        >
+                          {loading ? 'Actualizando...' : 'Actualizar precio'}
                         </button>
                       </div>
                     </>
